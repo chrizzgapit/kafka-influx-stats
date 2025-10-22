@@ -46,25 +46,25 @@ type LoggingConsumer = StreamConsumer<CustomContext>;
 #[allow(dead_code)]
 struct ValueCache {
     output_measurement: String,
-    created: u64,
-    first_seen: i64,
-    last_seen: i64,
-    inactivity_added_seconds: u64,
+    created_timestamp: u64,
+    first_value_ts: i64,
+    last_value_ts: i64,
+    minimum_inactivity_seconds: u64,
     ilp_line_count: usize,
-    fields_seen_total: usize,
-    uids: HashMap<String, UidCache>,
+    fields_seen_count: usize,
+    uids: HashMap<String, UidInfo>,
 }
 
 #[derive(Debug)]
-struct UidCache {
-    first_seen: i64,
-    last_seen: i64,
+struct UidInfo {
+    first_seen_ts: i64,
+    last_seen_ts: i64,
     seen_count: usize,
     equipment_tag: Option<String>,
     fields: HashMap<(String, String), FieldInfo>,
 }
 
-impl UidCache {
+impl UidInfo {
     fn is_inactive(&self, inactivity_added_seconds: u64) -> bool {
         self.fields
             .iter()
@@ -78,11 +78,13 @@ impl UidCache {
 struct FieldInfo {
     measurement: String,
     value: InfluxValue,
-    first_seen: i64,
-    last_seen: i64,
+    first_seen_ts: i64,
+    last_seen_ts: i64,
+    last_5_ts: Last5Timestamps,
     seen_count: usize,
 }
 
+#[derive(Debug, Clone)]
 struct Last5Timestamps {
     values: VecDeque<i64>,
 }
@@ -93,6 +95,13 @@ impl Last5Timestamps {
         Self {
             values: VecDeque::with_capacity(5),
         }
+    }
+    fn new_with_val(timestamp: i64) -> Self {
+        let mut ret = Self {
+            values: VecDeque::with_capacity(5),
+        };
+        ret.values.push_back(timestamp);
+        ret
     }
     fn push(&mut self, val: i64) {
         let mut cur_count = self.values.len();
@@ -105,20 +114,27 @@ impl Last5Timestamps {
     fn pop(&mut self) -> Option<i64> {
         self.values.pop_front()
     }
+    fn drop_front(&mut self) {
+        if self.values.is_empty() {
+            return;
+        }
+        let _ = self.values.pop_front();
+    }
     fn len(&self) -> usize {
         self.values.len()
     }
     fn mean_difference(&self) -> i64 {
-        if self.values.len() < 2 {
+        let ts_count = self.values.len();
+        if ts_count < 2 {
             return 0;
         }
         let mut idx = 0;
-        let mut differences = Vec::with_capacity(4);
-        while idx < (self.values.len() - 1) {
-            differences.push(self.values[idx + 1] - self.values[idx]);
+        let mut diffsum = 0;
+        while idx < (ts_count - 1) {
+            diffsum += self.values[idx + 1] - self.values[idx];
             idx += 1;
         }
-        differences.iter().sum::<i64>() / (differences.len() as i64)
+        diffsum / (ts_count - 1) as i64
     }
 }
 
@@ -137,22 +153,15 @@ impl FieldInfo {
             .unwrap()
             .as_secs();
 
-        let expected_frequency = if self.seen_count > 1 {
-            (self.last_seen - self.first_seen) / (self.seen_count as i64 - 1)
+        let estimated_frequency = if self.seen_count > 1 {
+            (self.last_seen_ts - self.first_seen_ts) / (self.seen_count as i64 - 1)
         } else {
             -1
         };
 
-        let threshold = curtime - expected_frequency as u64 - inactivity_added_seconds;
-        // dbg!(
-        //     &self.last_seen,
-        //     &expected_frequency,
-        //     &threshold,
-        //     curtime,
-        //     inactivity_added_seconds
-        // );
+        let threshold = curtime - estimated_frequency as u64 - inactivity_added_seconds;
 
-        self.seen_count > 1 && self.last_seen < threshold as i64
+        self.seen_count > 1 && self.last_seen_ts < threshold as i64
     }
 }
 impl std::fmt::Display for InfluxValue {
@@ -187,12 +196,12 @@ impl ValueCache {
             .as_secs();
         Self {
             output_measurement,
-            created: curtime,
-            inactivity_added_seconds: inactivity_threshold,
+            created_timestamp: curtime,
+            minimum_inactivity_seconds: inactivity_threshold,
             uids: HashMap::new(),
-            fields_seen_total: 0,
-            first_seen: i64::MAX,
-            last_seen: i64::MIN,
+            fields_seen_count: 0,
+            first_value_ts: i64::MAX,
+            last_value_ts: i64::MIN,
             ilp_line_count: 0,
         }
     }
@@ -205,36 +214,38 @@ impl ValueCache {
         timestamp: i64,
         measurement: EscapedStr<'_>,
     ) -> Result<(), String> {
-        self.fields_seen_total += field_set.len();
-        self.first_seen = self.first_seen.min(timestamp);
-        self.last_seen = self.last_seen.max(timestamp);
+        self.fields_seen_count += field_set.len();
+        self.first_value_ts = self.first_value_ts.min(timestamp);
+        self.last_value_ts = self.last_value_ts.max(timestamp);
         self.uids
             .entry(uid.to_string())
             .and_modify(|e| {
-                e.last_seen = e.last_seen.max(timestamp);
+                e.last_seen_ts = e.last_seen_ts.max(timestamp);
                 e.seen_count += 1;
                 for field in field_set {
                     e.fields
                         .entry((field.0.to_string(), measurement.to_string()))
                         .and_modify(|f| {
                             f.value = (field.1).to_owned().into();
-                            f.last_seen = f.last_seen.max(timestamp);
+                            f.last_seen_ts = f.last_seen_ts.max(timestamp);
                             f.seen_count += 1;
+                            f.last_5_ts.push(timestamp);
                         })
                         .or_insert({
                             FieldInfo {
                                 value: (field.1).to_owned().into(),
-                                first_seen: timestamp,
-                                last_seen: timestamp,
+                                first_seen_ts: timestamp,
+                                last_seen_ts: timestamp,
                                 seen_count: 1,
                                 measurement: measurement.to_string(),
+                                last_5_ts: Last5Timestamps::new_with_val(timestamp),
                             }
                         });
                 }
             })
-            .or_insert(UidCache {
-                first_seen: timestamp,
-                last_seen: timestamp,
+            .or_insert(UidInfo {
+                first_seen_ts: timestamp,
+                last_seen_ts: timestamp,
                 seen_count: 1,
                 equipment_tag,
                 fields: {
@@ -244,10 +255,11 @@ impl ValueCache {
                             (field_name.to_string(), measurement.to_string()),
                             FieldInfo {
                                 value: field_value.to_owned().into(),
-                                first_seen: timestamp,
-                                last_seen: timestamp,
+                                first_seen_ts: timestamp,
+                                last_seen_ts: timestamp,
                                 seen_count: 1,
                                 measurement: measurement.to_string(),
+                                last_5_ts: Last5Timestamps::new_with_val(timestamp),
                             },
                         );
                     }
@@ -265,7 +277,7 @@ impl ValueCache {
             - seconds;
         self.uids
             .iter()
-            .filter(|u| u.1.last_seen >= oldest_allowed_timestamp as i64)
+            .filter(|u| u.1.last_seen_ts >= oldest_allowed_timestamp as i64)
             .count()
     }
 
@@ -275,7 +287,7 @@ impl ValueCache {
 
     /// This does not take expected frequency in consideration, only seconds since last value.
     fn inactive_uid_count(&self, added_seconds: Option<u64>) -> usize {
-        let inactivity_added_seconds = added_seconds.unwrap_or(self.inactivity_added_seconds);
+        let inactivity_added_seconds = added_seconds.unwrap_or(self.minimum_inactivity_seconds);
         self.uids
             .iter()
             .filter(|u| u.1.is_inactive(inactivity_added_seconds))
@@ -290,11 +302,11 @@ impl ValueCache {
             - seconds;
         let mut field_count = 0;
         for uid_cache in self.uids.values() {
-            if uid_cache.last_seen < oldest_allowed_timestamp as i64 {
+            if uid_cache.last_seen_ts < oldest_allowed_timestamp as i64 {
                 continue;
             }
             for fieldinfo in uid_cache.fields.values() {
-                if fieldinfo.last_seen < oldest_allowed_timestamp as i64 {
+                if fieldinfo.last_seen_ts < oldest_allowed_timestamp as i64 {
                     continue;
                 }
                 field_count += 1;
@@ -308,7 +320,7 @@ impl ValueCache {
     }
 
     fn inactive_field_count(&self, added_seconds: Option<u64>) -> usize {
-        let inactivity_added_seconds = added_seconds.unwrap_or(self.inactivity_added_seconds);
+        let inactivity_added_seconds = added_seconds.unwrap_or(self.minimum_inactivity_seconds);
         self.uids
             .iter()
             .map(|u| {
@@ -356,18 +368,18 @@ impl ValueCache {
                     .equipment_tag
                     .clone()
                     .unwrap_or("unknown".to_string()),
-                uid_cache.first_seen,
-                uid_cache.last_seen
+                uid_cache.first_seen_ts,
+                uid_cache.last_seen_ts
             ));
             for field in &uid_cache.fields {
                 let estimated_frequency = if field.1.seen_count < 2 {
                     -1
                 } else {
-                    (field.1.last_seen - field.1.first_seen) / (field.1.seen_count as i64 - 1)
+                    (field.1.last_seen_ts - field.1.first_seen_ts) / (field.1.seen_count as i64 - 1)
                 };
                 result.push_str(&format!(
                     "Field: \"{}\", measurement: \"{}\", first seen: {}, last seen: {}, seen count: {}, estimated frequency: {}, value: \"{}\"\n",
-                    field.0.0, field.1.measurement, field.1.first_seen, field.1.last_seen, field.1.seen_count, estimated_frequency, field.1.value
+                    field.0.0, field.1.measurement, field.1.first_seen_ts, field.1.last_seen_ts, field.1.seen_count, estimated_frequency, field.1.value
                 ));
             }
             result.push('\n');
@@ -379,9 +391,9 @@ impl ValueCache {
     #[allow(dead_code)]
     fn check_ts(&self) {
         for (uid_name, uid_cache) in self.uids.iter() {
-            let ts = uid_cache.last_seen;
+            let ts = uid_cache.last_seen_ts;
             for field in &uid_cache.fields {
-                if field.1.last_seen != ts {
+                if field.1.last_seen_ts != ts {
                     println!(
                         "Uid \"{}\" (equipment-tag {}) last seen {}, but field \"{}\" last seen {}",
                         uid_name,
@@ -389,9 +401,9 @@ impl ValueCache {
                             .equipment_tag
                             .clone()
                             .unwrap_or("unknown".to_string()),
-                        uid_cache.last_seen,
+                        uid_cache.last_seen_ts,
                         field.0.0,
-                        field.1.last_seen
+                        field.1.last_seen_ts
                     );
                 }
             }
@@ -400,7 +412,7 @@ impl ValueCache {
 
     fn list_inactive(&self, inactivity_added_seconds: Option<u64>) -> String {
         let inactivity_added_seconds =
-            inactivity_added_seconds.unwrap_or(self.inactivity_added_seconds);
+            inactivity_added_seconds.unwrap_or(self.minimum_inactivity_seconds);
         let current_timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -411,7 +423,7 @@ impl ValueCache {
             if uid_cache.is_inactive(inactivity_added_seconds) {
                 result.push_str(&format!(
                     "Inactive Uid (no data at all for more than {} seconds, current age is {} seconds): uid {} equipment-tag {}\n",
-                    inactivity_added_seconds, current_timestamp as i64-uid_cache.last_seen, &uid_name, uid_cache.equipment_tag.clone().unwrap_or("unknown".to_string())
+                    inactivity_added_seconds, current_timestamp as i64-uid_cache.last_seen_ts, &uid_name, uid_cache.equipment_tag.clone().unwrap_or("unknown".to_string())
                 ));
                 uid_inactive = true;
             }
@@ -422,7 +434,7 @@ impl ValueCache {
                     inactive_fields.push((
                         field.0,
                         field.1.measurement.to_owned(),
-                        field.1.last_seen,
+                        field.1.last_seen_ts,
                     ));
                 }
             }
@@ -454,7 +466,7 @@ impl ValueCache {
 
     fn remove_inactive(&mut self, inactivity_added_seconds: Option<u64>) -> String {
         let inactitity_added_seconds =
-            inactivity_added_seconds.unwrap_or(self.inactivity_added_seconds);
+            inactivity_added_seconds.unwrap_or(self.minimum_inactivity_seconds);
         let mut count_whole_uids = 0;
         let mut count_whole_uids_fields = 0;
         let mut count_single_fields = 0;
@@ -517,7 +529,7 @@ impl ValueCache {
             .as_secs() as i64;
 
         for uid_cache in self.uids.values() {
-            let uid_age = curtime - uid_cache.last_seen;
+            let uid_age = curtime - uid_cache.last_seen_ts;
             uid_count += 1;
             sum += uid_age;
             maxage = maxage.max(uid_age);
@@ -796,7 +808,7 @@ async fn stats(State(state): State<AppState>) -> (StatusCode, String) {
         "{}{} timeperiod_length_seconds={},uids_total={},uids_inactive={},uid_fields_total={},uid_fields_inactive={},uid_age_min={},uid_age_max={},uid_age_mean={},ilp_lines_total={},fields_seen_total={}\n",
         lvcguard.output_measurement,
         host_tag,
-        lvcguard.last_seen - lvcguard.first_seen,
+        lvcguard.last_value_ts - lvcguard.first_value_ts,
         lvcguard.total_uid_count(),
         lvcguard.inactive_uid_count(None),
         lvcguard.total_field_count(),
@@ -805,7 +817,7 @@ async fn stats(State(state): State<AppState>) -> (StatusCode, String) {
         ages.max,
         ages.average,
         lvcguard.ilp_line_count,
-        lvcguard.fields_seen_total,
+        lvcguard.fields_seen_count,
     );
     (StatusCode::OK, ret)
 }
@@ -824,4 +836,23 @@ async fn remove_inactive(State(state): State<AppState>) -> (StatusCode, String) 
 struct AppState {
     data_cache: Arc<RwLock<ValueCache>>,
     config_output_reported_host: Option<String>,
+}
+
+#[cfg(test)]
+mod test {
+    use super::Last5Timestamps;
+
+    #[test]
+    fn test_last_5() {
+        let mut last = Last5Timestamps::new();
+        last.push(-1000); // Should be removed when 6th value is pushed
+        last.push(-500); // Should be removed by the drop_front
+        last.push(3);
+        last.push(5);
+        last.push(7);
+        last.push(9);
+        last.push(11);
+        last.drop_front();
+        assert_eq!(2, last.mean_difference());
+    }
 }

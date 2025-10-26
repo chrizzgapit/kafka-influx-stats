@@ -1,4 +1,7 @@
 use std::collections::{HashMap, VecDeque};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::path::PathBuf;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -9,7 +12,8 @@ use smallvec::SmallVec;
 use tokio::signal;
 use tokio::sync::RwLock;
 
-use axum::{Router, extract::State, http::StatusCode, routing::get};
+use axum::{Router, extract::Path, extract::State, http::StatusCode, routing::get};
+use axum_server::tls_rustls::RustlsConfig;
 
 use influxdb_line_protocol::{EscapedStr, FieldValue, ParsedLine};
 
@@ -123,7 +127,17 @@ impl Last5Timestamps {
     fn len(&self) -> usize {
         self.values.len()
     }
-    fn mean_difference(&self) -> i64 {
+    fn differences(&self) -> Vec<i64> {
+        if self.values.len() < 2 {
+            return vec![];
+        }
+        let mut diffs = Vec::with_capacity(self.values.len() - 1);
+        for i in 0..self.values.len() - 1 {
+            diffs.push(self.values[i + 1] - self.values[i]);
+        }
+        diffs
+    }
+    fn differences_mean(&self) -> i64 {
         let ts_count = self.values.len();
         if ts_count < 2 {
             return 0;
@@ -135,6 +149,20 @@ impl Last5Timestamps {
             idx += 1;
         }
         diffsum / (ts_count - 1) as i64
+    }
+    fn differences_stddev(&self) -> f64 {
+        let mean = self.differences_mean();
+        let mut sum_deviations = 0;
+        let differences = self.differences();
+        if differences.len() < 2 {
+            return -1.0;
+        }
+        for val in differences {
+            let deviation = (val - mean).pow(2);
+            sum_deviations += deviation;
+        }
+        let variance = sum_deviations as f64 / (self.values.len() - 2) as f64;
+        variance.sqrt()
     }
 }
 
@@ -378,8 +406,8 @@ impl ValueCache {
                     (field.1.last_seen_ts - field.1.first_seen_ts) / (field.1.seen_count as i64 - 1)
                 };
                 result.push_str(&format!(
-                    "Field: \"{}\", measurement: \"{}\", first seen: {}, last seen: {}, seen count: {}, estimated frequency: {}, value: \"{}\"\n",
-                    field.0.0, field.1.measurement, field.1.first_seen_ts, field.1.last_seen_ts, field.1.seen_count, estimated_frequency, field.1.value
+                    "Field: \"{}\", measurement: \"{}\", first seen: {}, last seen: {}, seen count: {}, estimated frequency: {}, differences_mean: {}, differences_stddev: {}, value: \"{}\"\n",
+                    field.0.0, field.1.measurement, field.1.first_seen_ts, field.1.last_seen_ts, field.1.seen_count, estimated_frequency, field.1.last_5_ts.differences_mean(), field.1.last_5_ts.differences_stddev(), field.1.value
                 ));
             }
             result.push('\n');
@@ -548,6 +576,27 @@ impl ValueCache {
             average: sum / uid_count,
         }
     }
+
+    fn uidinfo(&self, uid: &str) -> String {
+        let mut result = "".to_string();
+        if let Some(uid_cache) = self.uids.get(uid) {
+            for field in &uid_cache.fields {
+                let estimated_frequency = if field.1.seen_count < 2 {
+                    -1
+                } else {
+                    (field.1.last_seen_ts - field.1.first_seen_ts) / (field.1.seen_count as i64 - 1)
+                };
+                result.push_str(&format!(
+                    "Field: \"{}\", measurement: \"{}\", first seen: {}, last seen: {}, seen count: {}, estimated frequency: {}, differences_mean: {}, differences_stddev: {}, value: \"{}\"\n",
+                    field.0.0, field.1.measurement, field.1.first_seen_ts, field.1.last_seen_ts, field.1.seen_count, estimated_frequency, field.1.last_5_ts.differences_mean(), field.1.last_5_ts.differences_stddev(), field.1.value
+                ));
+            }
+            result.push('\n');
+        } else {
+            result = "Uid not found".to_string();
+        }
+        result
+    }
 }
 
 #[derive(Debug)]
@@ -707,6 +756,12 @@ struct CliArgs {
     topics: String,
     #[arg(long, env = "GAPIT_KAFKALVC_LOG_CONF")]
     log_conf: Option<String>,
+    #[arg(long, env = "GAPIT_KAFKALVC_TLS_ENABLE", default_value_t = false)]
+    tls_enabled: bool,
+    #[arg(long, env = "GAPIT_KAFKALVC_TLS_KEYFILE")]
+    tls_key_file: Option<String>,
+    #[arg(long, env = "GAPIT_KAFKALVC_TLS_CERTFILE")]
+    tls_cert_file: Option<String>,
 }
 
 #[tokio::main]
@@ -717,6 +772,10 @@ async fn main() {
         env!("CARGO_PKG_VERSION")
     );
     let args = CliArgs::parse();
+
+    if args.tls_enabled && args.tls_key_file.is_none() || args.tls_cert_file.is_none() {
+        panic!("TLS enabled but certificate file or certificate key file not specified.");
+    }
     setup_logger(true, args.log_conf.as_ref());
     let (version_n, version_s) = get_rdkafka_version();
     info!("rd_kafka_version: 0x{:08x}, {}", version_n, version_s);
@@ -740,24 +799,72 @@ async fn main() {
         consume_and_print(brokers, group_id, topics, lvcclone).await;
     });
 
-    // Set up and start web service
+    // Set up web service
     let app = Router::new()
         .route("/", get(root))
         .route("/uidcount", get(uid_count_last_minute))
         .route("/fieldcount", get(field_count_last_minute))
         .route("/everything", get(everything))
+        .route("/uidinfo/{uid}", get(uidinfo))
         .route("/stats", get(stats))
         .route("/inactive", get(list_inactive))
         .route("/inactive/remove", get(remove_inactive))
         .with_state(state);
-    let listener = tokio::net::TcpListener::bind(format!("{}:{}", args.bind_ip, args.port))
-        .await
-        .unwrap();
-    tokio::spawn(async {
-        axum::serve(listener, app).await.unwrap();
-    });
+
+    if args.tls_enabled && args.tls_cert_file.is_some() && args.tls_key_file.is_some() {
+        println!(
+            "Starting HTTPS server listening on {}:{}",
+            args.bind_ip, args.port
+        );
+        tokio::spawn(async move {
+            let bind_ip = args.bind_ip.clone();
+            let port = args.port;
+            https_server(
+                app,
+                &bind_ip,
+                port,
+                args.tls_cert_file.unwrap().into(),
+                args.tls_key_file.unwrap().into(),
+            )
+            .await
+        });
+    } else {
+        println!(
+            "Starting HTTP server listening on {}:{}",
+            args.bind_ip, args.port
+        );
+        let listener = tokio::net::TcpListener::bind(format!("{}:{}", args.bind_ip, args.port))
+            .await
+            .unwrap();
+        tokio::spawn(async {
+            axum::serve(listener, app).await.unwrap();
+        });
+    }
 
     let _ = signal::ctrl_c().await;
+}
+
+async fn https_server(
+    app: Router,
+    address: &str,
+    port: u16,
+    tls_cert_file: PathBuf,
+    tls_key_file: PathBuf,
+) {
+    let config = match RustlsConfig::from_pem_file(tls_cert_file, tls_key_file).await {
+        Ok(config) => config,
+        Err(e) => panic!("Could not configure TLS: {}", e),
+    };
+    let address = match Ipv4Addr::from_str(address) {
+        Ok(address) => IpAddr::V4(address),
+        Err(e) => panic!("Couldn't parse IP address from {}: {}", address, e),
+    };
+    let socketaddr = SocketAddr::new(address, port);
+
+    axum_server::bind_rustls(socketaddr, config)
+        .serve(app.into_make_service())
+        .await
+        .unwrap();
 }
 
 async fn root(State(state): State<AppState>) -> (StatusCode, String) {
@@ -781,6 +888,10 @@ async fn field_count_last_minute(State(state): State<AppState>) -> (StatusCode, 
 async fn everything(State(state): State<AppState>) -> (StatusCode, String) {
     let lvcguard = state.data_cache.read().await;
     (StatusCode::OK, lvcguard.everything())
+}
+async fn uidinfo(Path(uid): Path<String>, State(state): State<AppState>) -> (StatusCode, String) {
+    let lvcguard = state.data_cache.read().await;
+    (StatusCode::OK, lvcguard.uidinfo(&uid))
 }
 
 // Openmetrics:
@@ -853,6 +964,15 @@ mod test {
         last.push(9);
         last.push(11);
         last.drop_front();
-        assert_eq!(2, last.mean_difference());
+        assert_eq!(2, last.differences_mean());
+    }
+
+    #[test]
+    fn test_last_5_stddev() {
+        let mut last = Last5Timestamps::new();
+        last.push(10);
+        last.push(20);
+        last.push(40);
+        assert_eq!(7.0710678118654755, last.differences_stddev());
     }
 }

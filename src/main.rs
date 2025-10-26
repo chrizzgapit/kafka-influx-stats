@@ -545,6 +545,30 @@ impl ValueCache {
         );
         result
     }
+    fn remove_inactive_uid(
+        &mut self,
+        uid: &str,
+        inactivity_added_seconds: Option<u64>,
+    ) -> Result<(), String> {
+        let inactitity_added_seconds =
+            inactivity_added_seconds.unwrap_or(self.minimum_inactivity_seconds);
+
+        if !self.uids.contains_key(uid) {
+            return Err("UID not found".to_string());
+        }
+
+        let uid_is_inactive = {
+            self.uids
+                .get(uid)
+                .unwrap()
+                .is_inactive(inactitity_added_seconds)
+        };
+        if uid_is_inactive {
+            let _ = self.uids.remove(uid);
+            return Ok(());
+        }
+        Err(format!("Uid {} was not inactive", uid))
+    }
 
     fn uid_ages(&self) -> Ages {
         let mut uid_count = 0;
@@ -809,6 +833,7 @@ async fn main() {
         .route("/stats", get(stats))
         .route("/inactive", get(list_inactive))
         .route("/inactive/remove", get(remove_inactive))
+        .route("/inactive/remove/uid/{uid}", get(remove_inactive_uid))
         .with_state(state);
 
     if args.tls_enabled && args.tls_cert_file.is_some() && args.tls_key_file.is_some() {
@@ -901,7 +926,7 @@ async fn uidinfo(Path(uid): Path<String>, State(state): State<AppState>) -> (Sta
 // suffix.
 // metricname[_unit]_suffix{[label_a=value_a]} [int64|float64|bool]
 // # HELP lvc_service_uid_total Current count of unique uids in cache
-// # TYPE lv_service_uid_total gauge
+// # TYPE lvc_service_uid_total gauge
 // lvc_service_uid_total <val>
 // # HELP lvc_service_fields_seen_total Fields processed by service
 // # TYPE lvc_service_fields_seen_total counter
@@ -940,6 +965,17 @@ async fn list_inactive(State(state): State<AppState>) -> (StatusCode, String) {
 async fn remove_inactive(State(state): State<AppState>) -> (StatusCode, String) {
     let mut lvcguard = state.data_cache.write().await;
     let ret = lvcguard.remove_inactive(None);
+    (StatusCode::OK, ret)
+}
+async fn remove_inactive_uid(
+    Path(uid): Path<String>,
+    State(state): State<AppState>,
+) -> (StatusCode, String) {
+    let mut lvcguard = state.data_cache.write().await;
+    let ret = match lvcguard.remove_inactive_uid(&uid, None) {
+        Ok(_) => format!("Removed inactive UID: {}", &uid),
+        Err(err) => format!("UID was not inactive and was not removed: {}", &err),
+    };
     (StatusCode::OK, ret)
 }
 

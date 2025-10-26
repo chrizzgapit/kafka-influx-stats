@@ -722,7 +722,7 @@ struct CliArgs {
     #[arg(short, long, env = "GAPIT_KAFKALVC_PORT", default_value_t = 3005)]
     port: u16,
     #[arg(short, long, env = "GAPIT_KAFKALVC_BIND_IP", default_value = "0.0.0.0")]
-    bind_ip: String,
+    bind_ip: IpAddr,
     #[arg(
         long,
         env = "GAPIT_KAFKALVC_OUTPUT_MEASUREMENT",
@@ -817,11 +817,11 @@ async fn main() {
             args.bind_ip, args.port
         );
         tokio::spawn(async move {
-            let bind_ip = args.bind_ip.clone();
+            // let bind_ip = args.bind_ip.clone();
             let port = args.port;
             https_server(
                 app,
-                &bind_ip,
+                &args.bind_ip.to_string(),
                 port,
                 args.tls_cert_file.unwrap().into(),
                 args.tls_key_file.unwrap().into(),

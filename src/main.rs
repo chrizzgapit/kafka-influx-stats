@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -406,7 +406,7 @@ impl ValueCache {
                     (field.1.last_seen_ts - field.1.first_seen_ts) / (field.1.seen_count as i64 - 1)
                 };
                 result.push_str(&format!(
-                    "Field: \"{}\", measurement: \"{}\", first seen: {}, last seen: {}, seen count: {}, estimated frequency: {}, differences_mean: {}, differences_stddev: {}, value: \"{}\"\n",
+                    "Field: \"{}\", measurement: \"{}\", first seen: {}, last seen: {}, seen count: {}, estimated frequency: {}, differences_mean: {}, differences_stddev: {:.2}, value: \"{}\"\n",
                     field.0.0, field.1.measurement, field.1.first_seen_ts, field.1.last_seen_ts, field.1.seen_count, estimated_frequency, field.1.last_5_ts.differences_mean(), field.1.last_5_ts.differences_stddev(), field.1.value
                 ));
             }
@@ -490,6 +490,18 @@ impl ValueCache {
             }
         }
         result
+    }
+
+    fn unique_field_name_count(&self) -> (usize, usize) {
+        let mut total_count = 0;
+        let mut fieldset = HashSet::new();
+        for info in self.uids.values() {
+            for field in &info.fields {
+                fieldset.insert(field.0.0.to_owned());
+                total_count += 1;
+            }
+        }
+        (fieldset.len(), total_count)
     }
 
     fn remove_inactive(&mut self, inactivity_added_seconds: Option<u64>) -> String {
@@ -611,7 +623,7 @@ impl ValueCache {
                     (field.1.last_seen_ts - field.1.first_seen_ts) / (field.1.seen_count as i64 - 1)
                 };
                 result.push_str(&format!(
-                    "Field: \"{}\", measurement: \"{}\", first seen: {}, last seen: {}, seen count: {}, estimated frequency: {}, differences_mean: {}, differences_stddev: {}, value: \"{}\"\n",
+                    "Field: \"{}\", measurement: \"{}\", first seen: {}, last seen: {}, seen count: {}, estimated frequency: {}, differences_mean: {}, differences_stddev: {:.2}, value: \"{}\"\n",
                     field.0.0, field.1.measurement, field.1.first_seen_ts, field.1.last_seen_ts, field.1.seen_count, estimated_frequency, field.1.last_5_ts.differences_mean(), field.1.last_5_ts.differences_stddev(), field.1.value
                 ));
             }
@@ -645,7 +657,7 @@ async fn consume_and_print(
         .set("group.id", group_id)
         .set("bootstrap.servers", brokers)
         .set("enable.partition.eof", "false")
-        .set("session.timeout.ms", "6000")
+        .set("session.timeout.ms", "30000")
         .set("enable.auto.commit", "true")
         .set("auto.offset.reset", "largest")
         .set("client.id", "lvc-stats")
@@ -797,7 +809,7 @@ async fn main() {
     );
     let args = CliArgs::parse();
 
-    if args.tls_enabled && args.tls_key_file.is_none() || args.tls_cert_file.is_none() {
+    if args.tls_enabled && (args.tls_key_file.is_none() || args.tls_cert_file.is_none()) {
         panic!("TLS enabled but certificate file or certificate key file not specified.");
     }
     setup_logger(true, args.log_conf.as_ref());
@@ -828,6 +840,7 @@ async fn main() {
         .route("/", get(root))
         .route("/uidcount", get(uid_count_last_minute))
         .route("/fieldcount", get(field_count_last_minute))
+        .route("/uniquefieldcount", get(unique_field_names))
         .route("/everything", get(everything))
         .route("/uidinfo/{uid}", get(uidinfo))
         .route("/stats", get(stats))
@@ -976,6 +989,12 @@ async fn remove_inactive_uid(
         Ok(_) => format!("Removed inactive UID: {}", &uid),
         Err(err) => format!("UID was not inactive and was not removed: {}", &err),
     };
+    (StatusCode::OK, ret)
+}
+async fn unique_field_names(State(state): State<AppState>) -> (StatusCode, String) {
+    let lvcguard = state.data_cache.read().await;
+    let counts = lvcguard.unique_field_name_count();
+    let ret = format!("total_count={},unique_count={}", counts.1, counts.0);
     (StatusCode::OK, ret)
 }
 

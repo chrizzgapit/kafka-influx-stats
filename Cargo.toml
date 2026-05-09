@@ -1,10 +1,15 @@
 [package]
-name = "kafka-influx-lvc"
-version = "0.1.7"
+name = "kafka-influx-stats"
+version = "0.1.14"
 edition = "2024"
 
 [dependencies]
-rdkafka = { version = "0.38.0", features = ["cmake-build", "zstd-pkg-config", "libz", "ssl"]}
+rdkafka = { version = "0.39.0", features = [
+  "cmake-build",
+  "zstd-pkg-config",
+  "libz",
+  "ssl",
+] }
 clap = { version = "4", features = ["env", "derive"] }
 log = { version = "0.4" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
@@ -13,5 +18,6 @@ chrono = { version = "0.4" }
 env_logger = { version = "0.11" }
 influxdb-line-protocol = { git = "https://github.com/influxdata/influxdb3_core", rev = "f1bc15655d50e07e2cb4d7a52acf5b1d24ff6516" }
 axum = { version = "0.8" }
-axum-server = { version = "0.7", features = [ "tls-rustls" ]}
+axum-server = { version = "0.8", features = ["tls-rustls"] }
 smallvec = { version = "1" }
+serde = { version = "1.0" }

@@ -11,7 +11,7 @@ pub fn setup_logger(log_thread: bool, rust_log: Option<&String>) {
         let thread_name = if log_thread {
             format!("(t: {}) ", thread::current().name().unwrap_or("unknown"))
         } else {
-            "".to_string()
+            String::new()
         };
 
         let local_time: DateTime<Local> = Local::now();

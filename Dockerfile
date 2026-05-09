@@ -1,4 +1,4 @@
-FROM rust:1.91.0-trixie AS builder
+FROM rust:1.93.0-trixie AS builder
 
 RUN apt-get update && apt-get install -y clang cmake
 
@@ -8,7 +8,7 @@ COPY Cargo.toml Cargo.lock ./
 
 RUN mkdir src && echo "fn main() {println!(\"Hello\");}" > src/main.rs
 RUN cargo build --release
-RUN rm -rf target/release/deps/kafka_influx_lvc* src
+RUN rm -rf target/release/deps/kafka_influx_stats* src
 
 COPY src/ ./src
 
@@ -19,8 +19,8 @@ FROM debian:trixie-slim
 
 WORKDIR /app
 
-COPY --from=builder /app/target/release/kafka-influx-lvc ./kafka-influx-lvc
+COPY --from=builder /app/target/release/kafka-influx-stats ./kafka-influx-stats
 
 EXPOSE 3005
 
-CMD ["./kafka-influx-lvc"]
+CMD ["./kafka-influx-stats"]

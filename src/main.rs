@@ -918,7 +918,7 @@ struct CliArgs {
     precision: Precision,
     #[arg(long, env = "GAPIT_KAFKASTATS_LOG_CONF")]
     log_conf: Option<String>,
-    #[arg(long, env = "GAPIT_KAFKASTATS_TLS_ENABLE", default_value_t = false)]
+    #[arg(long, env = "GAPIT_KAFKASTATS_TLS_ENABLED", default_value_t = false)]
     tls_enabled: bool,
     #[arg(long, env = "GAPIT_KAFKASTATS_TLS_KEYFILE")]
     tls_key_file: Option<String>,
@@ -964,7 +964,7 @@ async fn main() {
     let args = CliArgs::parse();
 
     assert!(
-        args.tls_enabled && (args.tls_key_file.is_none() || args.tls_cert_file.is_none()),
+        !(args.tls_enabled && (args.tls_key_file.is_none() || args.tls_cert_file.is_none())),
         "TLS enabled but certificate file or certificate key file not specified."
     );
     setup_logger(true, args.log_conf.as_ref());

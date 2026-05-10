@@ -1,5 +1,5 @@
 #![warn(clippy::pedantic)]
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::fmt::{Debug, Display, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
@@ -26,7 +26,7 @@ use rdkafka::consumer::{BaseConsumer, CommitMode, Consumer, ConsumerContext, Reb
 use rdkafka::message::{Headers, Message};
 use rdkafka::util::get_rdkafka_version;
 
-use crate::stats_utils::setup_logger;
+use crate::stats_utils::{Last5Timestamps, setup_logger};
 mod stats_utils;
 
 // A context can be used to change the behavior of producers and consumers by adding callbacks
@@ -61,6 +61,10 @@ struct ValueCache {
     ilp_line_count: usize,
     fields_seen_count: usize,
     fields_changed_count: usize,
+    fields_sent_changed_count: usize,
+    fields_sent_timeout_count: usize,
+    fields_sent_initial_count: usize,
+    fields_sent_suppressed_count: usize,
     uids: HashMap<String, UidInfo>,
     // field_names: HashSet<String>,
 }
@@ -91,98 +95,11 @@ struct FieldInfo {
     first_seen_ts: i64,
     last_seen_ts: i64,
     last_changed_ts: i64,
+    last_sent_ts: i64,
     last_5_ts: Last5Timestamps,
     seen_count: usize,
 }
 
-#[derive(Debug, Clone)]
-struct Last5Timestamps {
-    timestamps: VecDeque<i64>,
-}
-
-#[allow(dead_code)]
-impl Last5Timestamps {
-    fn new() -> Self {
-        Self {
-            timestamps: VecDeque::with_capacity(5),
-        }
-    }
-    fn new_with_val(timestamp: i64) -> Self {
-        let mut ret = Self {
-            timestamps: VecDeque::with_capacity(5),
-        };
-        ret.timestamps.push_back(timestamp);
-        ret
-    }
-    fn push(&mut self, val: i64) {
-        let mut cur_count = self.timestamps.len();
-        while cur_count >= 5 {
-            let _ = self.timestamps.pop_front();
-            cur_count -= 1;
-        }
-        self.timestamps.push_back(val);
-    }
-    fn pop(&mut self) -> Option<i64> {
-        self.timestamps.pop_front()
-    }
-    fn drop_front(&mut self) {
-        if self.timestamps.is_empty() {
-            return;
-        }
-        let _ = self.timestamps.pop_front();
-    }
-    fn len(&self) -> usize {
-        self.timestamps.len()
-    }
-    fn differences(&self) -> Vec<i64> {
-        if self.timestamps.len() < 2 {
-            return vec![];
-        }
-        let mut diffs = Vec::with_capacity(self.timestamps.len() - 1);
-        for i in 0..self.timestamps.len() - 1 {
-            diffs.push(self.timestamps[i + 1] - self.timestamps[i]);
-        }
-        diffs
-    }
-    #[allow(clippy::cast_possible_wrap)]
-    fn differences_mean(&self) -> i64 {
-        let timestamp_count = self.timestamps.len();
-        if timestamp_count < 2 {
-            return 0;
-        }
-        let mut idx = 0;
-        let mut diffsum = 0;
-        while idx < (timestamp_count - 1) {
-            diffsum += self.timestamps[idx + 1] - self.timestamps[idx];
-            idx += 1;
-        }
-        diffsum / (timestamp_count - 1) as i64
-    }
-    #[allow(clippy::cast_precision_loss)]
-    fn differences_stddev(&self) -> f64 {
-        let mean = self.differences_mean();
-        let mut sum_deviations = 0;
-        let differences = self.differences();
-        if differences.len() < 2 {
-            return -1.0;
-        }
-        for val in differences {
-            let deviation = (val - mean).pow(2);
-            sum_deviations += deviation;
-        }
-        let variance = sum_deviations as f64 / (self.timestamps.len() - 2) as f64;
-        variance.sqrt()
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-enum InfluxValue {
-    I64(i64),
-    U64(u64),
-    F64(f64),
-    String(String),
-    Boolean(bool),
-}
 impl FieldInfo {
     #[allow(clippy::cast_possible_wrap, clippy::cast_sign_loss)]
     fn is_inactive(&self, inactivity_added_seconds: u64) -> bool {
@@ -214,6 +131,15 @@ impl std::fmt::Display for InfluxValue {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+enum InfluxValue {
+    I64(i64),
+    U64(u64),
+    F64(f64),
+    String(String),
+    Boolean(bool),
+}
+
 impl<'a> From<FieldValue<'a>> for InfluxValue {
     fn from(value: FieldValue<'a>) -> Self {
         match value {
@@ -241,6 +167,10 @@ impl ValueCache {
             last_value_ts: i64::MIN,
             kafka_message_count: 0,
             ilp_line_count: 0,
+            fields_sent_changed_count: 0,
+            fields_sent_timeout_count: 0,
+            fields_sent_initial_count: 0,
+            fields_sent_suppressed_count: 0,
         }
     }
 
@@ -257,30 +187,40 @@ impl ValueCache {
         self.last_value_ts = self.last_value_ts.max(timestamp);
         self.uids
             .entry(uid.to_string())
-            .and_modify(|e| {
-                e.last_seen_ts = e.last_seen_ts.max(timestamp);
-                e.seen_count += 1;
+            .and_modify(|uidinfo| {
+                uidinfo.last_seen_ts = uidinfo.last_seen_ts.max(timestamp);
+                uidinfo.seen_count += 1;
                 for (field_name, field_value) in field_set {
-                    e.fields
+                    uidinfo
+                        .fields
                         .entry((field_name.to_string(), measurement.to_string()))
-                        .and_modify(|f| {
+                        .and_modify(|fieldinfo| {
                             let new_val: InfluxValue = field_value.to_owned().into();
-                            if f.value != new_val {
+                            if fieldinfo.value != new_val {
                                 self.fields_changed_count += 1;
-                                f.last_changed_ts = timestamp;
+                                self.fields_sent_changed_count += 1;
+                                fieldinfo.last_changed_ts = timestamp;
+                                fieldinfo.last_sent_ts = timestamp;
+                            } else if timestamp >= fieldinfo.last_sent_ts + 60 {
+                                fieldinfo.last_sent_ts = timestamp;
+                                self.fields_sent_timeout_count += 1;
+                            } else {
+                                self.fields_sent_suppressed_count += 1;
                             }
-                            f.value = new_val;
-                            f.last_seen_ts = f.last_seen_ts.max(timestamp);
-                            f.seen_count += 1;
-                            f.last_5_ts.push(timestamp);
+                            fieldinfo.value = new_val;
+                            fieldinfo.last_seen_ts = fieldinfo.last_seen_ts.max(timestamp);
+                            fieldinfo.seen_count += 1;
+                            fieldinfo.last_5_ts.push(timestamp);
                         })
-                        .or_insert({
+                        .or_insert_with(|| {
+                            self.fields_sent_initial_count += 1;
                             //self.field_names.insert(field_name.to_string());
                             FieldInfo {
                                 value: field_value.to_owned().into(),
                                 first_seen_ts: timestamp,
                                 last_seen_ts: timestamp,
-                                last_changed_ts: 0,
+                                last_changed_ts: timestamp,
+                                last_sent_ts: timestamp,
                                 seen_count: 1,
                                 measurement: measurement.to_string(),
                                 last_5_ts: Last5Timestamps::new_with_val(timestamp),
@@ -288,30 +228,34 @@ impl ValueCache {
                         });
                 }
             })
-            .or_insert(UidInfo {
-                first_seen_ts: timestamp,
-                last_seen_ts: timestamp,
-                seen_count: 1,
-                equipment_tag,
-                fields: {
-                    let mut hm = HashMap::new();
-                    for (field_name, field_value) in field_set {
-                        //self.field_names.insert(field_name.to_string());
-                        hm.insert(
-                            (field_name.to_string(), measurement.to_string()),
-                            FieldInfo {
-                                value: field_value.to_owned().into(),
-                                first_seen_ts: timestamp,
-                                last_seen_ts: timestamp,
-                                last_changed_ts: 0,
-                                seen_count: 1,
-                                measurement: measurement.to_string(),
-                                last_5_ts: Last5Timestamps::new_with_val(timestamp),
-                            },
-                        );
-                    }
-                    hm
-                },
+            .or_insert_with(|| {
+                UidInfo {
+                    first_seen_ts: timestamp,
+                    last_seen_ts: timestamp,
+                    seen_count: 1,
+                    equipment_tag,
+                    fields: {
+                        let mut hm = HashMap::new();
+                        self.fields_sent_initial_count += field_set.len();
+                        for (field_name, field_value) in field_set {
+                            //self.field_names.insert(field_name.to_string());
+                            hm.insert(
+                                (field_name.to_string(), measurement.to_string()),
+                                FieldInfo {
+                                    value: field_value.to_owned().into(),
+                                    first_seen_ts: timestamp,
+                                    last_seen_ts: timestamp,
+                                    last_sent_ts: timestamp,
+                                    last_changed_ts: timestamp,
+                                    seen_count: 1,
+                                    measurement: measurement.to_string(),
+                                    last_5_ts: Last5Timestamps::new_with_val(timestamp),
+                                },
+                            );
+                        }
+                        hm
+                    },
+                }
             });
     }
 
@@ -685,13 +629,7 @@ impl ValueCache {
                 .fields
                 .get(&(fieldname.to_string(), measurement.to_string()))
             {
-                let values: String = field
-                    .last_5_ts
-                    .timestamps
-                    .iter()
-                    .map(|&v| format!("{v}"))
-                    .collect::<Vec<String>>()
-                    .join(", ");
+                let values: String = field.last_5_ts.to_string();
                 let _ = write!(
                     result,
                     "Uid: \"{uid}\", measurement: \"{measurement}\", last seen: {}, seen_count: {}, ts_differences_mean: {}, ts_differences_stddev: {:.2}, last_timestamps: {}",
@@ -1159,7 +1097,7 @@ async fn stats(State(state): State<AppState>) -> (StatusCode, String) {
             };
 
             let ret = format!(
-                "{}{} timeperiod_length_seconds={},uid_all_count={},uid_inactive_count={},uid_plus_field_combination_count={},uid_field_inactive_count={},uid_age_min={},uid_age_max={},uid_age_mean={},kafka_message_count={},ilp_line_count={},field_count={},changed_fields_count={},unique_field_name_count={}\n",
+                "{}{} timeperiod_length_seconds={},uid_all_count={},uid_inactive_count={},uid_plus_field_combination_count={},uid_field_inactive_count={},uid_age_min={},uid_age_max={},uid_age_mean={},kafka_message_count={},ilp_line_count={},field_count={},changed_fields_count={},unique_field_name_count={},fields_sent_initial_count={},fields_sent_suppressed_count={},fields_sent_changed_count={},fields_sent_timeout={}\n",
                 valuecache.output_measurement,
                 host_tag,
                 valuecache.last_value_ts - valuecache.first_value_ts,
@@ -1174,7 +1112,11 @@ async fn stats(State(state): State<AppState>) -> (StatusCode, String) {
                 valuecache.ilp_line_count,
                 valuecache.fields_seen_count,
                 valuecache.fields_changed_count,
-                valuecache.unique_field_name_count().0
+                valuecache.unique_field_name_count().0,
+                valuecache.fields_sent_initial_count,
+                valuecache.fields_sent_suppressed_count,
+                valuecache.fields_sent_changed_count,
+                valuecache.fields_sent_timeout_count,
             );
             (StatusCode::OK, ret)
             //

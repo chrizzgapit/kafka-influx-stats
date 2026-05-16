@@ -1,5 +1,9 @@
-use std::{collections::VecDeque, io::Write};
+#![warn(clippy::pedantic)]
+use std::fmt::Display;
 use std::thread;
+use std::time::SystemTime;
+use std::time::UNIX_EPOCH;
+use std::{collections::VecDeque, io::Write};
 
 use chrono::prelude::*;
 use env_logger::Builder;
@@ -115,12 +119,63 @@ impl Last5Timestamps {
         let variance = sum_deviations as f64 / (self.timestamps.len() - 2) as f64;
         variance.sqrt()
     }
-    pub(crate) fn to_string(&self) -> String {
-        self.timestamps
+}
+
+impl Display for Last5Timestamps {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let values = self
+            .timestamps
             .iter()
             .map(|&v| format!("{v}"))
             .collect::<Vec<String>>()
-            .join(", ")
+            .join(", ");
+        write!(f, "{values}")
+    }
+}
 
+#[allow(clippy::cast_possible_wrap)]
+pub(crate) fn curtime() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64
+}
+
+#[cfg(test)]
+mod test {
+    use super::Last5Timestamps;
+
+    #[test]
+    fn test_last_5_timestamps_differences_mean() {
+        let mut last = Last5Timestamps::new();
+        last.push(-1000); // Should be removed when 6th value is pushed
+        last.push(-500); // Should be removed by the drop_front
+        last.push(3);
+        last.push(5);
+        last.push(7);
+        last.push(9);
+        last.push(11);
+        last.drop_front();
+        assert_eq!(2, last.differences_mean());
+    }
+    #[test]
+    fn test_last_5_timestamps_differences_mean2() {
+        let mut last = Last5Timestamps::new();
+        last.push(2);
+        last.push(2);
+        last.push(2);
+        last.push(2);
+        last.push(2);
+        assert_eq!(0, last.differences_mean());
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn test_last_5_timestamps_stddev() {
+        let mut last = Last5Timestamps::new();
+        last.push(10);
+        last.push(20);
+        last.push(40);
+        assert_eq!(7.071_067_811_865_475_5, last.differences_stddev());
     }
 }

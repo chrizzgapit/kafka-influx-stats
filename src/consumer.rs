@@ -2,7 +2,7 @@
 use rdkafka::client::ClientContext;
 use rdkafka::config::{ClientConfig, RDKafkaLogLevel};
 use rdkafka::consumer::stream_consumer::StreamConsumer;
-use rdkafka::consumer::{BaseConsumer, CommitMode, Consumer, ConsumerContext, Rebalance};
+use rdkafka::consumer::{BaseConsumer, Consumer, ConsumerContext, Rebalance};
 use rdkafka::message::{Headers, Message};
 use rdkafka::{Offset, TopicPartitionList};
 
@@ -50,9 +50,9 @@ pub(crate) async fn consume_and_process(
         .set("bootstrap.servers", brokers)
         .set("enable.partition.eof", "false")
         .set("session.timeout.ms", "30000")
-        .set("enable.auto.commit", "true")
         .set("auto.offset.reset", "latest")
         .set("client.id", "kafka-stats")
+        .set("message.max.bytes", "10000000")
         //.set("statistics.interval.ms", "30000")
         .set_log_level(RDKafkaLogLevel::Warning);
 
@@ -80,7 +80,6 @@ pub(crate) async fn consume_and_process(
                 .unwrap();
         }
         consumer.assign(&tpl).unwrap();
-        // consumer.commit(&tpl, CommitMode::Sync).unwrap();
     }
 
     loop {
@@ -156,7 +155,6 @@ pub(crate) async fn consume_and_process(
                         info!("XXX  Header {:#?}: {:?}", header.key, header.value);
                     }
                 }
-                consumer.commit_message(&m, CommitMode::Async).unwrap();
             }
         }
     }

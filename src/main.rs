@@ -41,7 +41,6 @@ async fn main() {
     )));
 
     let state = api::AppState {
-        // data_cache: Arc::clone(stats),
         data_cache: Arc::clone(&kafkastats),
         config_output_reported_host: args.output_reported_host.clone(),
     };

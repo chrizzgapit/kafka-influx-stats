@@ -6,13 +6,13 @@ WORKDIR /app
 
 COPY Cargo.toml Cargo.lock ./
 
-RUN mkdir src && echo "fn main() {println!(\"Hello\");}" > src/main.rs
-RUN cargo build --release
-RUN rm -rf target/release/deps/kafka_influx_stats* src
+RUN mkdir src && echo "fn main() {println!(\"Hello\");}" > src/main.rs && cargo build --release && rm -rf target/release/deps/kafka_influx_stats* src
+#RUN cargo build --release
+#RUN rm -rf target/release/deps/kafka_influx_stats* src
 
 COPY src/ ./src
 
-RUN find . | grep -v target
+#RUN find . | grep -v target
 RUN cargo build --release
 
 FROM debian:trixie-slim

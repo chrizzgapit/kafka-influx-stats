@@ -10,7 +10,6 @@ use influxdb_line_protocol::ParsedLine;
 
 use crate::Precision;
 use crate::ValueCache;
-use crate::curtime;
 use log::{info, warn};
 use std::sync::{Arc, Mutex};
 
@@ -94,7 +93,7 @@ pub(crate) async fn consume_and_process(
                         ""
                     }
                 };
-                let timestamp_ms = curtime() * 1000;
+                let kafka_timestamp_ms = m.timestamp().to_millis().unwrap();
                 let parsed_lines = influxdb_line_protocol::parse_lines(payload);
 
                 // Grab the lock and keep it for all lines in the message
@@ -103,10 +102,10 @@ pub(crate) async fn consume_and_process(
 
                 // Set fallback timestamp from Kafka message timestamp, or system timestamp in
                 // correct precision.
-                let sys_timestamp = if valuecache.precision == Precision::Second {
-                    timestamp_ms / 1000
+                let kafka_timestamp = if valuecache.precision == Precision::Second {
+                    kafka_timestamp_ms / 1000
                 } else if valuecache.precision == Precision::Nanosecond {
-                    timestamp_ms * 1_000_000
+                    kafka_timestamp_ms * 1_000_000
                 } else {
                     panic!()
                 };
@@ -140,7 +139,7 @@ pub(crate) async fn consume_and_process(
                                 &uid.unwrap().1,
                                 equipment_tag,
                                 &field_set,
-                                timestamp.unwrap_or(sys_timestamp),
+                                timestamp.unwrap_or(kafka_timestamp),
                                 &series.measurement,
                             );
                             valuecache.ilp_line_count += 1;

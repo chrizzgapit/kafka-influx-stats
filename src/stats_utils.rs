@@ -134,7 +134,7 @@ impl Display for Last5Timestamps {
 }
 
 #[allow(clippy::cast_possible_wrap)]
-pub(crate) fn curtime() -> i64 {
+pub(crate) fn cur_sys_time() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()

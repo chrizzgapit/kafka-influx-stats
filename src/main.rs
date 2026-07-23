@@ -1,7 +1,6 @@
 #![warn(clippy::pedantic)]
 use crate::cache::ValueCache;
 use crate::consumer::consume_and_process;
-use crate::stats_utils::curtime;
 use clap::Parser;
 use std::sync::{Arc, Mutex};
 

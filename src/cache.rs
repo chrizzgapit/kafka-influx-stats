@@ -1,7 +1,7 @@
 #![warn(clippy::pedantic)]
 use crate::Last5Timestamps;
 use crate::Precision;
-use crate::stats_utils::curtime;
+use crate::stats_utils::cur_sys_time;
 
 use core::f64;
 use influxdb_line_protocol::{EscapedStr, FieldValue};
@@ -81,7 +81,8 @@ impl FieldInfo {
             -1
         };
 
-        let threshold = curtime() as u64 - estimated_frequency as u64 - inactivity_added_seconds;
+        let threshold =
+            cur_sys_time() as u64 - estimated_frequency as u64 - inactivity_added_seconds;
 
         self.seen_count > 1 && self.last_seen_ts < threshold as i64
     }
@@ -130,7 +131,7 @@ impl ValueCache {
     ) -> Self {
         Self {
             output_measurement,
-            created_timestamp: curtime(),
+            created_timestamp: cur_sys_time(),
             precision,
             minimum_inactivity_seconds: inactivity_threshold,
             uids: HashMap::new(),
@@ -237,7 +238,7 @@ impl ValueCache {
     }
 
     pub(crate) fn uid_count_last_seconds(&self, seconds: i64) -> usize {
-        let oldest_allowed_timestamp = curtime() - seconds;
+        let oldest_allowed_timestamp = cur_sys_time() - seconds;
         self.uids
             .iter()
             .filter(|u| u.1.last_seen_ts >= oldest_allowed_timestamp)
@@ -258,7 +259,7 @@ impl ValueCache {
     }
 
     pub(crate) fn field_count_last_seconds(&self, seconds: i64) -> usize {
-        let oldest_allowed_timestamp = curtime() - seconds;
+        let oldest_allowed_timestamp = cur_sys_time() - seconds;
         let mut field_count = 0;
         for uid_cache in self.uids.values() {
             if uid_cache.last_seen_ts < oldest_allowed_timestamp {
@@ -395,7 +396,7 @@ impl ValueCache {
     pub(crate) fn list_inactive(&self, inactivity_added_seconds: Option<u64>) -> String {
         let inactivity_added_seconds =
             inactivity_added_seconds.unwrap_or(self.minimum_inactivity_seconds);
-        let current_timestamp = curtime();
+        let current_timestamp = cur_sys_time();
         let mut result = String::new();
         for (uid_name, uid_cache) in &self.uids {
             let mut uid_inactive = false;
@@ -551,7 +552,7 @@ impl ValueCache {
         let mut minage = i64::MAX;
 
         for uid_cache in self.uids.values() {
-            let uid_age = curtime() - uid_cache.last_seen_ts;
+            let uid_age = cur_sys_time() - uid_cache.last_seen_ts;
             uid_count += 1;
             sum += uid_age;
             maxage = maxage.max(uid_age);
@@ -637,7 +638,7 @@ impl ValueCache {
         let mut count = 0;
         for uid in &self.uids {
             for info in uid.1.fields.values() {
-                if info.last_changed_ts >= curtime() - seconds {
+                if info.last_changed_ts >= cur_sys_time() - seconds {
                     count += 1;
                 }
             }

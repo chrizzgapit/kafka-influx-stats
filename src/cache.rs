@@ -3,13 +3,12 @@ use crate::Last5Timestamps;
 use crate::Precision;
 use crate::stats_utils::curtime;
 
+use core::f64;
 use influxdb_line_protocol::{EscapedStr, FieldValue};
 use smallvec::SmallVec;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt::Write;
-use std::time::SystemTime;
-use std::time::UNIX_EPOCH;
 
 #[derive(Debug)]
 #[allow(dead_code)]
@@ -76,18 +75,13 @@ pub(crate) enum InfluxValue {
 impl FieldInfo {
     #[allow(clippy::cast_possible_wrap, clippy::cast_sign_loss)]
     fn is_inactive(&self, inactivity_added_seconds: u64) -> bool {
-        let curtime = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-
         let estimated_frequency = if self.seen_count > 1 {
             (self.last_seen_ts - self.first_seen_ts) / (self.seen_count as i64 - 1)
         } else {
             -1
         };
 
-        let threshold = curtime - estimated_frequency as u64 - inactivity_added_seconds;
+        let threshold = curtime() as u64 - estimated_frequency as u64 - inactivity_added_seconds;
 
         self.seen_count > 1 && self.last_seen_ts < threshold as i64
     }
@@ -366,7 +360,7 @@ impl ValueCache {
                     field.1.seen_count,
                     estimated_frequency,
                     field.1.last_5_ts.differences_mean(),
-                    field.1.last_5_ts.differences_stddev(),
+                    field.1.last_5_ts.differences_stddev().unwrap_or(f64::NAN),
                     field.1.value
                 );
             }
@@ -411,7 +405,7 @@ impl ValueCache {
                     "Inactive Uid (no data at all for more than {} seconds, current age is {} seconds): uid {} equipment-tag {}",
                     inactivity_added_seconds,
                     current_timestamp - uid_cache.last_seen_ts,
-                    &uid_name,
+                    uid_name,
                     uid_cache
                         .equipment_tag
                         .clone()
@@ -598,7 +592,7 @@ impl ValueCache {
                     fieldinfo.seen_count,
                     estimated_frequency,
                     fieldinfo.last_5_ts.differences_mean(),
-                    fieldinfo.last_5_ts.differences_stddev(),
+                    fieldinfo.last_5_ts.differences_stddev().unwrap_or(f64::NAN),
                     fieldinfo.value
                 );
             }
@@ -628,7 +622,7 @@ impl ValueCache {
                     field.last_seen_ts,
                     field.seen_count,
                     field.last_5_ts.differences_mean(),
-                    field.last_5_ts.differences_stddev(),
+                    field.last_5_ts.differences_stddev().unwrap_or(f64::NAN),
                     values
                 );
             } else {

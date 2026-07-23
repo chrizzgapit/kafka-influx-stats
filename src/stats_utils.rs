@@ -105,19 +105,19 @@ impl Last5Timestamps {
         diffsum / (timestamp_count - 1) as i64
     }
     #[allow(clippy::cast_precision_loss)]
-    pub(crate) fn differences_stddev(&self) -> f64 {
+    pub(crate) fn differences_stddev(&self) -> Option<f64> {
         let mean = self.differences_mean();
         let mut sum_deviations = 0;
         let differences = self.differences();
         if differences.len() < 2 {
-            return -1.0;
+            return None;
         }
         for val in differences {
             let deviation = (val - mean).pow(2);
             sum_deviations += deviation;
         }
         let variance = sum_deviations as f64 / (self.timestamps.len() - 2) as f64;
-        variance.sqrt()
+        Some(variance.sqrt())
     }
 }
 
@@ -176,6 +176,6 @@ mod test {
         last.push(10);
         last.push(20);
         last.push(40);
-        assert_eq!(7.071_067_811_865_475_5, last.differences_stddev());
+        assert_eq!(7.071_067_811_865_475_5, last.differences_stddev().unwrap());
     }
 }

@@ -94,8 +94,6 @@ pub(crate) async fn consume_and_process(
                         ""
                     }
                 };
-                // Resetting offsets needs to be done after partitions have been assigned, that's why
-                // this is inside the receiving loop.
                 let timestamp_ms = curtime() * 1000;
                 let parsed_lines = influxdb_line_protocol::parse_lines(payload);
 
@@ -105,7 +103,7 @@ pub(crate) async fn consume_and_process(
 
                 // Set fallback timestamp from Kafka message timestamp, or system timestamp in
                 // correct precision.
-                let kafka_or_sys_timestamp = if valuecache.precision == Precision::Second {
+                let sys_timestamp = if valuecache.precision == Precision::Second {
                     timestamp_ms / 1000
                 } else if valuecache.precision == Precision::Nanosecond {
                     timestamp_ms * 1_000_000
@@ -142,7 +140,7 @@ pub(crate) async fn consume_and_process(
                                 &uid.unwrap().1,
                                 equipment_tag,
                                 &field_set,
-                                timestamp.unwrap_or(kafka_or_sys_timestamp),
+                                timestamp.unwrap_or(sys_timestamp),
                                 &series.measurement,
                             );
                             valuecache.ilp_line_count += 1;

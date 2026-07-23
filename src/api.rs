@@ -235,8 +235,8 @@ async fn remove_inactive_uid(
     match state.data_cache.lock() {
         Ok(mut valuecache) => {
             let ret = match valuecache.remove_uid_if_inactive(&uid, None) {
-                Ok(()) => format!("Removed inactive UID: {}", &uid),
-                Err(err) => format!("UID was not inactive and was not removed: {}", &err),
+                Ok(()) => format!("Removed inactive UID: {uid}"),
+                Err(err) => format!("UID was not inactive and was not removed: {err}"),
             };
             (StatusCode::OK, ret)
         }

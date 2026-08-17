@@ -40,11 +40,6 @@ async fn main() {
         args.precision,
     )));
 
-    let state = api::AppState {
-        data_cache: Arc::clone(&kafkastats),
-        config_output_reported_host: args.output_reported_host.clone(),
-    };
-
     // Start Kafka consumer
     let topics = args
         .topics
@@ -58,7 +53,12 @@ async fn main() {
         consume_and_process(brokers, group_id, topics, statsclone).await;
     });
 
-    // Set up web service
+    // Set up and start web service
+    let state = api::AppState {
+        data_cache: Arc::clone(&kafkastats),
+        config_output_reported_host: args.output_reported_host.clone(),
+    };
+
     api::start(args, state).await;
     let _ = signal::ctrl_c().await;
 }

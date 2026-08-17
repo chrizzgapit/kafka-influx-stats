@@ -111,7 +111,7 @@ pub(crate) async fn consume_and_process(
                 };
                 for parsed_line in parsed_lines {
                     match parsed_line {
-                        Err(e) => println!("Skipping unparseable line: {e}"),
+                        Err(e) => warn!("Skipping unparseable line: {e}"),
                         Ok(parsed_line) => {
                             let ParsedLine {
                                 series,
@@ -121,13 +121,16 @@ pub(crate) async fn consume_and_process(
 
                             // We must be able to read uid from tags, empty tag_set => no uid tag
                             if series.tag_set.is_none() {
+                                warn!("Skipping line without tag-set");
+                                valuecache.ilp_line_missing_tag_set_count += 1;
                                 continue;
                             }
                             let tags = series.tag_set.unwrap();
 
                             let uid = tags.iter().find(|&x| x.0 == "uid");
                             if uid.is_none() {
-                                println!("Skipping line without uid tag");
+                                warn!("Skipping line without uid tag");
+                                valuecache.ilp_line_missing_uid_count += 1;
                                 continue;
                             }
                             let equipment_tag = tags
@@ -135,6 +138,7 @@ pub(crate) async fn consume_and_process(
                                 .find(|&x| x.0 == "Equipment-tag")
                                 .map(|x| x.1.to_string());
 
+                            valuecache.ilp_line_count += 1;
                             valuecache.add_or_update_fields(
                                 &uid.unwrap().1,
                                 equipment_tag,
@@ -142,7 +146,6 @@ pub(crate) async fn consume_and_process(
                                 timestamp.unwrap_or(kafka_timestamp),
                                 &series.measurement,
                             );
-                            valuecache.ilp_line_count += 1;
                         }
                     }
                 }

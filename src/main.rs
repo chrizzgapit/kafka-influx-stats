@@ -4,7 +4,7 @@ use crate::consumer::consume_and_process;
 use clap::Parser;
 use std::sync::{Arc, Mutex};
 
-use log::{info, warn};
+use log::{error, info, warn};
 use tokio::signal;
 
 use rdkafka::util::get_rdkafka_version;
@@ -25,10 +25,10 @@ async fn main() {
         env!("CARGO_PKG_VERSION")
     );
     let args = config::CliArgs::parse();
-    assert!(
-        !(args.tls_enabled && (args.tls_key_file.is_none() || args.tls_cert_file.is_none())),
-        "TLS enabled but certificate file or certificate key file not specified."
-    );
+    if !(args.tls_enabled && (args.tls_key_file.is_none() || args.tls_cert_file.is_none())) {
+        error!("TLS enabled but certificate file or certificate key file not specified.");
+        std::process::exit(1);
+    }
 
     setup_logger(true, args.log_conf.as_ref());
     let (version_n, version_s) = get_rdkafka_version();

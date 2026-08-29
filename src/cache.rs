@@ -77,16 +77,18 @@ pub(crate) enum InfluxValue {
 impl FieldInfo {
     #[allow(clippy::cast_possible_wrap, clippy::cast_sign_loss)]
     fn is_inactive(&self, inactivity_added_seconds: u64) -> bool {
-        let estimated_frequency = if self.seen_count > 1 {
-            (self.last_seen_ts - self.first_seen_ts) / (self.seen_count as i64 - 1)
-        } else {
-            -1
-        };
-
+        let estimated_frequency = self.estimated_frequency();
         let threshold =
             cur_sys_time() as u64 - estimated_frequency as u64 - inactivity_added_seconds;
 
         self.seen_count > 1 && self.last_seen_ts < threshold as i64
+    }
+    fn estimated_frequency(&self) -> i64 {
+        if self.seen_count < 2 {
+            -1
+        } else {
+            (self.last_seen_ts - self.first_seen_ts) / (self.seen_count as i64 - 1)
+        }
     }
 }
 impl std::fmt::Display for InfluxValue {
@@ -350,11 +352,7 @@ impl ValueCache {
                 uid_cache.last_seen_ts
             );
             for field in &uid_cache.fields {
-                let estimated_frequency = if field.1.seen_count < 2 {
-                    -1
-                } else {
-                    (field.1.last_seen_ts - field.1.first_seen_ts) / (field.1.seen_count as i64 - 1)
-                };
+                let estimated_frequency = field.1.estimated_frequency();
                 let _ = writeln!(
                     result,
                     "Field: \"{}\", measurement: \"{}\", first seen: {}, last seen: {}, seen count: {}, estimated frequency: {}, ts_differences_mean: {}, differences_stddev: {:.2}, value: \"{}\"\n",
@@ -581,12 +579,7 @@ impl ValueCache {
         let mut result = String::new();
         if let Some(uid_cache) = self.uids.get(uid) {
             for ((fieldname, measurement), fieldinfo) in &uid_cache.fields {
-                let estimated_frequency = if fieldinfo.seen_count < 2 {
-                    -1
-                } else {
-                    (fieldinfo.last_seen_ts - fieldinfo.first_seen_ts)
-                        / (fieldinfo.seen_count as i64 - 1)
-                };
+                let estimated_frequency = fieldinfo.estimated_frequency();
                 let _ = writeln!(
                     result,
                     "Field: \"{}\", measurement: \"{}\", first seen: {}, last seen: {}, seen count: {}, estimated frequency: {}, ts_differences_mean: {}, ts_differences_stddev: {:.2}, value: \"{}\"",

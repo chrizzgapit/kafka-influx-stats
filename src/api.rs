@@ -293,12 +293,10 @@ async fn least_changed_fields(
                     .uids
                     .iter()
                     .flat_map(|u| {
-                        u.1.fields
-                            .iter()
-                            .map(|((fieldname, _), fieldinfo)| {
-                                (fieldname.clone(), fieldinfo.changed_count)
-                            })
-                            .collect::<Vec<_>>()
+                        u.1.fields.iter().map(|((fieldname, _), fieldinfo)| {
+                            (fieldname.clone(), fieldinfo.changed_count)
+                        })
+                        // .collect::<Vec<_>>()
                     })
                     .collect::<Vec<_>>();
                 least_changed.sort_by_key(|v| v.1);

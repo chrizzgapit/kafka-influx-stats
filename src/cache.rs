@@ -83,6 +83,7 @@ impl FieldInfo {
 
         self.seen_count > 1 && self.last_seen_ts < threshold as i64
     }
+    #[allow(clippy::cast_possible_wrap)]
     fn estimated_frequency(&self) -> i64 {
         if self.seen_count < 2 {
             -1

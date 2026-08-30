@@ -89,55 +89,23 @@ async fn https_server(
 }
 
 async fn root(State(state): State<AppState>) -> (StatusCode, String) {
-    match state.data_cache.lock() {
-        Ok(valuecache) => (StatusCode::OK, valuecache.uids_and_fields_to_string()),
-        Err(_) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Couldn't lock mutex".to_string(),
-        ),
-    }
+    with_cache(&state, super::cache::ValueCache::uids_and_fields_to_string)
 }
 async fn uid_count_last_minute(State(state): State<AppState>) -> (StatusCode, String) {
-    match state.data_cache.lock() {
-        Ok(valuecache) => (
-            StatusCode::OK,
-            format!("{}", valuecache.uid_count_last_seconds(60)),
-        ),
-        Err(_) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Couldn't lock mutex".to_string(),
-        ),
-    }
+    with_cache(&state, |valuecache| {
+        format!("{}", valuecache.uid_count_last_seconds(60))
+    })
 }
 async fn field_count_last_minute(State(state): State<AppState>) -> (StatusCode, String) {
-    match state.data_cache.lock() {
-        Ok(valuecache) => (
-            StatusCode::OK,
-            format!("{}", valuecache.field_count_last_seconds(60)),
-        ),
-        Err(_) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Couldn't lock mutex".to_string(),
-        ),
-    }
+    with_cache(&state, |valuecache| {
+        format!("{}", valuecache.field_count_last_seconds(60))
+    })
 }
 async fn everything(State(state): State<AppState>) -> (StatusCode, String) {
-    match state.data_cache.lock() {
-        Ok(valuecache) => (StatusCode::OK, valuecache.everything_to_string()),
-        Err(_) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Couldn't lock mutex".to_string(),
-        ),
-    }
+    with_cache(&state, super::cache::ValueCache::everything_to_string)
 }
 async fn uidinfo(Path(uid): Path<String>, State(state): State<AppState>) -> (StatusCode, String) {
-    match state.data_cache.lock() {
-        Ok(valuecache) => (StatusCode::OK, valuecache.get_uid_info(&uid)),
-        Err(_) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Couldn't lock mutex".to_string(),
-        ),
-    }
+    with_cache(&state, |valuecache| valuecache.get_uid_info(&uid))
 }
 
 async fn uidfieldinfo(
@@ -148,133 +116,84 @@ async fn uidfieldinfo(
     }): Path<FieldInfoParams>,
     State(state): State<AppState>,
 ) -> (StatusCode, String) {
-    match state.data_cache.lock() {
-        Ok(valuecache) => (
-            StatusCode::OK,
-            valuecache.get_uid_field_info(&uid, &measurement, &field_name),
-        ),
-        Err(_) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Couldn't lock mutex".to_string(),
-        ),
-    }
+    with_cache(&state, |valuecache| {
+        valuecache.get_uid_field_info(&uid, &measurement, &field_name)
+    })
 }
 
 async fn stats(State(state): State<AppState>) -> (StatusCode, String) {
-    match state.data_cache.lock() {
-        Ok(valuecache) => {
-            if valuecache.last_value_ts < valuecache.first_value_ts {
-                return (StatusCode::OK, "Not enough data collected".to_string());
-            }
-            let ages = valuecache.get_uid_age_stats();
-            let host_tag = if let Some(host) = state.config_output_reported_host {
-                format!(",host={host}")
-            } else {
-                String::new()
-            };
-
-            let ret = format!(
-                "{}{} timeperiod_length_seconds={},uid_all_count={},uid_inactive_count={},uid_plus_field_combination_count={},uid_field_inactive_count={},uid_age_min={},uid_age_max={},uid_age_mean={},kafka_message_count={},ilp_line_count={},field_count={},changed_fields_count={},unique_field_name_count={},fields_sent_initial_count={},fields_sent_suppressed_count={},fields_sent_changed_count={},fields_sent_timeout={}\n",
-                valuecache.output_measurement,
-                host_tag,
-                valuecache.last_value_ts - valuecache.first_value_ts,
-                valuecache.total_uid_count(),
-                valuecache.inactive_uid_count(None),
-                valuecache.total_field_count(),
-                valuecache.inactive_field_count(None),
-                ages.min,
-                ages.max,
-                ages.average,
-                valuecache.kafka_message_count,
-                valuecache.ilp_line_count,
-                valuecache.fields_seen_count,
-                valuecache.fields_changed_count,
-                valuecache.unique_field_name_count().0,
-                valuecache.fields_sent_initial_count,
-                valuecache.fields_sent_suppressed_count,
-                valuecache.fields_sent_changed_count,
-                valuecache.fields_sent_timeout_count,
-            );
-            (StatusCode::OK, ret)
-            //
+    with_cache(&state, |valuecache| {
+        if valuecache.last_value_ts < valuecache.first_value_ts {
+            return "Not enough data collected".to_string();
         }
-        Err(_) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Couldn't lock mutex".to_string(),
-        ),
-    }
+        let ages = valuecache.get_uid_age_stats();
+        let host_tag = if let Some(host) = state.config_output_reported_host.clone() {
+            format!(",host={host}")
+        } else {
+            String::new()
+        };
+
+        let ret = format!(
+            "{}{} timeperiod_length_seconds={},uid_all_count={},uid_inactive_count={},uid_plus_field_combination_count={},uid_field_inactive_count={},uid_age_min={},uid_age_max={},uid_age_mean={},kafka_message_count={},ilp_line_count={},field_count={},changed_fields_count={},unique_field_name_count={},fields_sent_initial_count={},fields_sent_suppressed_count={},fields_sent_changed_count={},fields_sent_timeout={}\n",
+            valuecache.output_measurement,
+            host_tag,
+            valuecache.last_value_ts - valuecache.first_value_ts,
+            valuecache.total_uid_count(),
+            valuecache.inactive_uid_count(None),
+            valuecache.total_field_count(),
+            valuecache.inactive_field_count(None),
+            ages.min,
+            ages.max,
+            ages.average,
+            valuecache.kafka_message_count,
+            valuecache.ilp_line_count,
+            valuecache.fields_seen_count,
+            valuecache.fields_changed_count,
+            valuecache.unique_field_name_count().0,
+            valuecache.fields_sent_initial_count,
+            valuecache.fields_sent_suppressed_count,
+            valuecache.fields_sent_changed_count,
+            valuecache.fields_sent_timeout_count,
+        );
+        ret
+    })
 }
 async fn list_inactive(State(state): State<AppState>) -> (StatusCode, String) {
-    match state.data_cache.lock() {
-        Ok(valuecache) => {
-            let ret = valuecache.list_inactive(None);
-            (StatusCode::OK, ret)
-        }
-        Err(_) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Couldn't lock mutex".to_string(),
-        ),
-    }
+    with_cache(&state, |valuecache| valuecache.list_inactive(None))
 }
 async fn remove_inactive(State(state): State<AppState>) -> (StatusCode, String) {
-    match state.data_cache.lock() {
-        Ok(mut valuecache) => {
-            let ret = valuecache.remove_inactive_uids_and_fields(None);
-            (StatusCode::OK, ret)
-        }
-        Err(_) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Couldn't lock mutex".to_string(),
-        ),
-    }
+    with_cache_mut(&state, |valuecache| {
+        valuecache.remove_inactive_uids_and_fields(None)
+    })
 }
 async fn remove_inactive_uid(
     Path(uid): Path<String>,
     State(state): State<AppState>,
 ) -> (StatusCode, String) {
-    match state.data_cache.lock() {
-        Ok(mut valuecache) => {
-            let ret = match valuecache.remove_uid_if_inactive(&uid, None) {
-                Ok(()) => format!("Removed inactive UID: {uid}"),
-                Err(err) => format!("UID was not inactive and was not removed: {err}"),
-            };
-            (StatusCode::OK, ret)
+    with_cache_mut(&state, |valuecache| {
+        match valuecache.remove_uid_if_inactive(&uid, None) {
+            Ok(()) => format!("Removed inactive UID: {uid}"),
+            Err(err) => format!("UID was not inactive and was not removed: {err}"),
         }
-        Err(_) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Couldn't lock mutex".to_string(),
-        ),
-    }
+    })
 }
 async fn unique_field_names(State(state): State<AppState>) -> (StatusCode, String) {
-    match state.data_cache.lock() {
-        Ok(valuecache) => {
-            let counts = valuecache.unique_field_name_count();
-            let ret = format!("total_count={},unique_count={}", counts.1, counts.0);
-            (StatusCode::OK, ret)
-        }
-        Err(_) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Couldn't lock mutex".to_string(),
-        ),
-    }
+    with_cache(&state, |cache| {
+        let counts = cache.unique_field_name_count();
+        let ret = format!("total_count={},unique_count={}", counts.1, counts.0);
+        ret
+    })
 }
 async fn count_changed_fields_last_seconds(
     Path(seconds): Path<String>,
     State(state): State<AppState>,
 ) -> (StatusCode, String) {
     match seconds.parse::<i64>() {
-        Ok(secs) => match state.data_cache.lock() {
-            Ok(valuecache) => {
-                let count = valuecache.changed_fields_last_seconds(secs);
-                let ret = format!("changed_fields_last_{secs}_seconds_count={count}");
-                (StatusCode::OK, ret)
-            }
-            Err(_) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Couldn't lock mutex".to_string(),
-            ),
-        },
+        Ok(secs) => with_cache(&state, |valuecache| {
+            let count = valuecache.changed_fields_last_seconds(secs);
+            let ret = format!("changed_fields_last_{secs}_seconds_count={count}");
+            ret
+        }),
         Err(_) => (
             StatusCode::UNPROCESSABLE_ENTITY,
             format!("Couldn't parse {seconds} into i64"),
@@ -287,32 +206,25 @@ async fn least_changed_fields(
     State(state): State<AppState>,
 ) -> (StatusCode, String) {
     match count.parse::<usize>() {
-        Ok(count) => match state.data_cache.lock() {
-            Ok(data_cache) => {
-                let mut least_changed = data_cache
-                    .uids
-                    .iter()
-                    .flat_map(|u| {
-                        u.1.fields.iter().map(|((fieldname, _), fieldinfo)| {
-                            (fieldname.clone(), fieldinfo.changed_count)
-                        })
-                        // .collect::<Vec<_>>()
+        Ok(count) => with_cache(&state, |valuecache| {
+            let mut least_changed = valuecache
+                .uids
+                .iter()
+                .flat_map(|u| {
+                    u.1.fields.iter().map(|((fieldname, _), fieldinfo)| {
+                        (fieldname.clone(), fieldinfo.changed_count)
                     })
-                    .collect::<Vec<_>>();
-                least_changed.sort_by_key(|v| v.1);
-                let ret = least_changed
-                    .iter()
-                    .take(count)
-                    .map(|v| format!("{}: {}\n", v.0, v.1))
-                    .collect::<Vec<_>>();
-                let ret = ret.join("");
-                (StatusCode::OK, ret)
-            }
-            Err(_) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Couldn't lock mutex".to_string(),
-            ),
-        },
+                    // .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>();
+            least_changed.sort_by_key(|v| v.1);
+            let ret = least_changed
+                .iter()
+                .take(count)
+                .map(|v| format!("{}: {}\n", v.0, v.1))
+                .collect::<Vec<_>>();
+            ret.join("")
+        }),
         Err(_) => (
             StatusCode::UNPROCESSABLE_ENTITY,
             format!("Couldn't parse {count} into usize"),
@@ -320,6 +232,32 @@ async fn least_changed_fields(
     }
 }
 
+fn with_cache<T, F>(state: &AppState, f: F) -> (StatusCode, String)
+where
+    F: FnOnce(&ValueCache) -> T,
+    T: Into<String>,
+{
+    match state.data_cache.lock() {
+        Ok(cache) => (StatusCode::OK, f(&cache).into()),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Couldn't lock mutex".to_string(),
+        ),
+    }
+}
+fn with_cache_mut<T, F>(state: &AppState, f: F) -> (StatusCode, String)
+where
+    F: FnOnce(&mut ValueCache) -> T,
+    T: Into<String>,
+{
+    match state.data_cache.lock() {
+        Ok(mut cache) => (StatusCode::OK, f(&mut cache).into()),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Couldn't lock mutex".to_string(),
+        ),
+    }
+}
 #[derive(Clone)]
 pub(crate) struct AppState {
     pub(crate) data_cache: Arc<Mutex<ValueCache>>,
